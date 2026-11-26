@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>导播台 · 字幕</title>
+<style>
+  body { font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; margin: 24px; color: #222; }
+  h1 { font-size: 20px; }
+  .bar { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+  .pill { padding: 4px 10px; border-radius: 12px; font-size: 13px; background: #eee; }
+  .pill.green { background: #d4f5d4; } .pill.red { background: #ffd9d6; } .pill.gray { background: #eee; }
+  table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+  th, td { border: 1px solid #ddd; padding: 6px 10px; font-size: 14px; text-align: left; }
+  th { background: #f5f5f5; }
+  input, button { font-size: 14px; padding: 4px 8px; }
+  input[type=number] { width: 90px; }
+  button { cursor: pointer; }
+  button:disabled { cursor: not-allowed; opacity: .4; }
+  #err { color: #c00; font-size: 13px; margin-left: 8px; }
+  .badge { padding: 2px 8px; border-radius: 10px; font-size: 12px; white-space: nowrap; }
+  .b-wait { background: #e8ecff; } .b-play { background: #d4f5d4; }
+  .b-ing  { background: #fff0c2; } .b-done { background: #eee; color: #888; }
+  .b-fin  { background: #f0f0f0; color: #999; }
+  #events { margin-top: 18px; font: 12px/1.7 monospace; color: #555; }
+  #events div { border-bottom: 1px dashed #eee; }
+  a { color: #36c; }
+</style>
+</head>
+<body>
+<h1>字幕导播台 <a href="/screen" target="_blank" style="font-size:13px">打开投屏页 ↗</a></h1>
+
+<div class="bar">
+  <span id="bcast" class="pill gray">未开播</span>
+  <span id="screen" class="pill gray">投屏离线</span>
+  <button id="btnStart">开播</button>
+  <button id="btnReset">重置</button>
+</div>
+
+<div class="bar">
+  <b>录入字幕</b>
+  <label>开始(秒) <input id="inStart" type="number" min="0" step="0.5" value="2"></label>
+  <label>结束(秒) <input id="inEnd" type="number" min="0" step="0.5" value="8"></label>
+  <label>文本 <input id="inText" type="text" size="30" placeholder="字幕内容"></label>
+  <button id="btnAdd">添加</button>
+  <span id="err"></span>
+</div>
+
+<table>
+  <thead><tr>
+    <th>#</th><th>时段(秒)</th><th>内容</th><th>状态</th><th>许可剩余</th><th>操作</th>
+  </tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<div id="events"></div>
+
+<script>
+(function () {
+  "use strict";
+  var elRows = document.getElementById("rows");
+  var elErr = document.getElementById("err");
+  var elBcast = document.getElementById("bcast");
+  var elScreen = document.getElementById("screen");
+  var elEvents = document.getElementById("events");
+  var btnStart = document.getElementById("btnStart");
+
+  function post(url, body) {
+    return fetch(url, {
+      method: "POST",
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined
+    }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); });
+  }
+
+  function statusBadge(s) {
+    if (s.status === "revoking") return '<span class="badge b-ing">撤下中</span>';
+    if (s.status === "revoked")  return '<span class="badge b-done">已撤下</span>';
+    if (s.playing)  return '<span class="badge b-play">播放中</span>';
+    if (s.finished) return '<span class="badge b-fin">已播完</span>';
+    return '<span class="badge b-wait">待播</span>';
+  }
+
+  function refresh() {
+    fetch("/api/state").then(function (r) { return r.json(); }).then(function (st) {
+      elBcast.textContent = st.started ? ("已开播 " + st.elapsed.toFixed(1) + "s") : "未开播";
+      elBcast.className = "pill " + (st.started ? "green" : "gray");
+      elScreen.textContent = st.screen_online ? "投屏在线" : "投屏离线";
+      elScreen.className = "pill " + (st.screen_online ? "green" : "red");
+      btnStart.disabled = st.started;
+
+      elRows.innerHTML = st.subtitles.map(function (s) {
+        var canRevoke = s.status === "scheduled" && !s.finished;
+        return "<tr><td>" + s.id + "</td><td>" + s.start + " – " + s.end + "</td><td>" +
+          escapeHtml(s.text) + "</td><td>" + statusBadge(s) + "</td><td>" +
+          (s.license_remaining > 0 ? s.license_remaining.toFixed(1) + "s" : "—") + "</td><td>" +
+          (canRevoke ? '<button data-revoke="' + s.id + '">撤下</button>' : "") +
+          "</td></tr>";
+      }).join("");
+
+      elEvents.innerHTML = "<b>事件</b>" + st.events.map(function (e) {
+        var ago = Math.max(0, st.now - e.t).toFixed(0);
+        return "<div>" + ago + "s 前 · " + escapeHtml(e.msg) + "</div>";
+      }).join("");
+    });
+  }
+
+  function escapeHtml(t) {
+    return String(t).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  document.getElementById("btnAdd").onclick = function () {
+    elErr.textContent = "";
+    post("/api/subtitles", {
+      start: document.getElementById("inStart").value,
+      end: document.getElementById("inEnd").value,
+      text: document.getElementById("inText").value
+    }).then(function (r) {
+      if (!r.ok) elErr.textContent = r.body.error || "添加失败";
+      refresh();
+    });
+  };
+
+  btnStart.onclick = function () {
+    post("/api/broadcast/start").then(function (r) {
+      if (!r.ok) elErr.textContent = r.body.error || "开播失败";
+      refresh();
+    });
+  };
+
+  document.getElementById("btnReset").onclick = function () {
+    if (!confirm("重置将清空全部字幕与开播状态，确定？")) return;
+    post("/api/reset").then(refresh);
+  };
+
+  elRows.addEventListener("click", function (ev) {
+    var id = ev.target.getAttribute("data-revoke");
+    if (id) post("/api/subtitles/" + id + "/revoke").then(refresh);
+  });
+
+  setInterval(refresh, 1000);
+  refresh();
+})();
+</script>
+</body>
+</html>

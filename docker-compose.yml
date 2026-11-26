@@ -1,0 +1,25 @@
+# 会场字幕投屏系统：导播页 + 独立投屏页
+services:
+  web:
+    build: ./app
+    image: subtitle-director-web
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/state', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 5s
+
+  # 端到端冒烟测试：docker compose --profile test up --build --abort-on-container-exit smoke
+  smoke:
+    image: subtitle-director-web
+    build: ./app
+    profiles: ["test"]
+    depends_on:
+      web:
+        condition: service_healthy
+    volumes:
+      - ./tests:/tests:ro
+    command: ["python", "-I", "/tests/smoke_test.py", "http://web:8000"]

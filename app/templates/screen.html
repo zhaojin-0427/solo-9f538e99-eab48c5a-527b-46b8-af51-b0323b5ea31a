@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>投屏 · 字幕</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; }
+  #stage {
+    position: fixed; inset: 0; display: flex; align-items: flex-end; justify-content: center;
+    padding-bottom: 8vh; box-sizing: border-box;
+  }
+  #subtitle {
+    font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+    font-size: 5.5vw; font-weight: 700; color: #fff; text-align: center;
+    text-shadow: 0 0 6px #000, 0 2px 4px #000, -1px -1px 0 #000, 1px 1px 0 #000;
+    max-width: 90vw; line-height: 1.3; white-space: pre-wrap;
+  }
+  #standby {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #444; font: 24px/1 sans-serif;
+  }
+  #hud {
+    position: fixed; top: 8px; right: 10px; z-index: 10;
+    font: 13px/1.6 monospace; color: #ccc; text-align: right;
+  }
+  #hud .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; }
+  #hud .on  { background: #2ecc40; } #hud .off { background: #ff4136; }
+  #hud button { font: 12px monospace; margin-left: 6px; cursor: pointer; }
+  #debug {
+    position: fixed; top: 8px; left: 10px; z-index: 10; max-width: 44vw;
+    font: 12px/1.5 monospace; color: #9f9; white-space: pre-wrap; display: none;
+  }
+</style>
+</head>
+<body>
+<div id="stage"><div id="subtitle"></div></div>
+<div id="standby">等待开播…</div>
+<div id="hud">
+  <span><span id="dot" class="dot on"></span><span id="connText">在线</span></span>
+  <button id="btnNet">模拟掉线</button>
+  <button id="btnDebug">调试</button>
+</div>
+<div id="debug"></div>
+
+<script src="/static/screen_logic.js"></script>
+<script>
+(function () {
+  "use strict";
+  var player = ScreenLogic.createPlayer();
+  var clockOffset = 0;          // 服务器时钟 - 本地时钟
+  var simulatedOffline = false; // 网页模拟掉线：完全停止请求
+  var lastFetchOk = true;
+
+  var elSub = document.getElementById("subtitle");
+  var elStandby = document.getElementById("standby");
+  var elDot = document.getElementById("dot");
+  var elConn = document.getElementById("connText");
+  var elDebug = document.getElementById("debug");
+  var btnNet = document.getElementById("btnNet");
+  var btnDebug = document.getElementById("btnDebug");
+
+  function serverNow() { return Date.now() / 1000 + clockOffset; }
+
+  function prefetch() {
+    if (simulatedOffline) return;
+    fetch("/api/prefetch").then(function (r) { return r.json(); }).then(function (resp) {
+      lastFetchOk = true;
+      clockOffset = resp.now - Date.now() / 1000;
+      var toAck = ScreenLogic.applyPrefetch(player, resp);
+      // 清除该条后立即向服务器确认
+      toAck.forEach(function (id) {
+        fetch("/api/subtitles/" + id + "/ack", { method: "POST" }).catch(function () {});
+      });
+    }).catch(function () { lastFetchOk = false; });
+  }
+
+  function render() {
+    var cur = ScreenLogic.currentSubtitle(player, serverNow());
+    elSub.textContent = cur ? cur.text : "";
+    elStandby.style.display = (player.broadcastStart === null) ? "flex" : "none";
+
+    var online = !simulatedOffline && lastFetchOk;
+    elDot.className = "dot " + (online ? "on" : "off");
+    elConn.textContent = simulatedOffline ? "模拟掉线" : (lastFetchOk ? "在线" : "连接失败");
+
+    if (elDebug.style.display !== "none") {
+      var now = serverNow();
+      var lines = [
+        "elapsed: " + (player.broadcastStart === null ? "-" : (now - player.broadcastStart).toFixed(1) + "s"),
+        "cache:"
+      ];
+      player.cache.forEach(function (s, id) {
+        lines.push("  #" + id + " [" + s.start + "-" + s.end + "s] 许可剩余 " +
+                   Math.max(0, s.licenseExpiry - now).toFixed(1) + "s  " + s.text);
+      });
+      lines.push("tombstones: " + (player.tombstones.size ? Array.from(player.tombstones).join(",") : "(空)"));
+      elDebug.textContent = lines.join("\n");
+    }
+  }
+
+  btnNet.onclick = function () {
+    simulatedOffline = !simulatedOffline;
+    btnNet.textContent = simulatedOffline ? "模拟重连" : "模拟掉线";
+    if (!simulatedOffline) prefetch(); // 重连：立即重新预取
+  };
+  btnDebug.onclick = function () {
+    elDebug.style.display = (elDebug.style.display === "none") ? "block" : "none";
+  };
+
+  setInterval(prefetch, 1000); // 在线时持续预取未来 5 秒字幕
+  setInterval(render, 100);
+  prefetch();
+})();
+</script>
+</body>
+</html>
